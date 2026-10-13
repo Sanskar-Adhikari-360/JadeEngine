@@ -6,6 +6,7 @@ package jade;
 import org.lwjgl.*;
 import org.lwjgl.glfw.*;
 import org.lwjgl.opengl.*;
+import util.Time;
 
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
@@ -18,10 +19,14 @@ public class Window {
     private String title;
     private long glfwWindow;
 
-    private float r,g,b,a;
-    private boolean fadeToBlack = false;
+    public float r,g,b,a;
 
+    // Stores just one instance of window cause it is a singleton class
     private static Window window = null;
+
+    // Stores what scene is currently running
+    // Can contain any class that extends Scene
+    private static Scene currentScene;
 
     private Window() {
         this.width = 1920;
@@ -31,6 +36,22 @@ public class Window {
         b = 1;
         g = 1;
         a = 1;
+    }
+
+    // This function creates a new scene and uses that as a current scene
+    public static void changeScene(int newScene){
+        switch (newScene){
+            case 0:
+                currentScene = new LevelEditorScene();
+                //currentScene.init();
+                break;
+            case 1:
+                currentScene = new LevelScene();
+                break;
+            default:
+                assert false: "Unknown scene '" + newScene + "'";
+                break;
+        }
     }
 
     public static Window get() {
@@ -99,8 +120,17 @@ public class Window {
         // bindings available for use.
         GL.createCapabilities();
 
+        Window.changeScene(0);
+
     }
     public void loop() {
+        // The time the game loop began in
+        float beginTime = Time.getTime();
+        float endTime;
+        // The dt is set to negative so the scene isn't updated on the first frame
+        // the real dt is calculated on the end of the frame
+        float dt = -1.0f;
+
         while (!glfwWindowShouldClose(glfwWindow)) {
             // Poll events
             glfwPollEvents();
@@ -108,18 +138,19 @@ public class Window {
             glClearColor(r, g, b, a);
             glClear(GL_COLOR_BUFFER_BIT);
 
-            if(fadeToBlack){
-                r = Math.max(r - 0.01f,0);
-                g = Math.max(g - 0.01f,0);
-                b = Math.max(b - 0.01f,0);
-                a = Math.max(a - 0.01f,0);
-            }
-
-            if (MouseListener.mouseButtonDown(2)){
-                fadeToBlack = true;
+            if (dt >= 0) {
+                //Passes the dt to whichever scene is currently active to update
+                currentScene.update(dt);
             }
 
             glfwSwapBuffers(glfwWindow);
+
+            // The time it took to finish the game loop
+            endTime = Time.getTime();
+            // Takes endTime and beginTime and gives us delta time
+            dt = endTime - beginTime;
+            // re-initializes the beginTime value to be equal to endTime for the next frame
+            beginTime = endTime;
         }
     }
 
