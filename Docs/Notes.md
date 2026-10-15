@@ -1,0 +1,653 @@
+# Jade Engine Notes
+
+*Version 2, written against the code as of 2026-10-15. This is a first draft: rewrite sections in your own words as you learn. The goal is that future-you can understand the engine without reading every file.*
+
+**Contents**
+
+1. [Overview](#1-overview)
+2. [Project layout and setup](#2-project-layout-and-setup)
+3. [Libraries and how they fit together](#3-libraries-and-how-they-fit-together)
+4. [Startup and shutdown](#4-startup-and-shutdown)
+5. [Window and the game loop](#5-window-and-the-game-loop)
+6. [Time and delta time](#6-time-and-delta-time)
+7. [Input](#7-input)
+8. [Scenes](#8-scenes)
+9. [Camera](#9-camera)
+10. [Geometry on the GPU](#10-geometry-on-the-gpu)
+11. [Shaders](#11-shaders)
+12. [One frame, start to finish](#12-one-frame-start-to-finish)
+13. [Known issues and gotchas](#13-known-issues-and-gotchas)
+14. [Glossary](#14-glossary)
+15. [Keeping this doc up to date](#15-keeping-this-doc-up-to-date)
+16. [Things I don't understand yet](#16-things-i-dont-understand-yet)
+
+---
+
+## 1. Overview
+
+Jade is a 2D game engine written in Java. It uses **LWJGL** to talk to **GLFW** (windows and input) and **OpenGL** (drawing), and **JOML** for matrix and vector math.
+
+**What the program does right now:**
+
+- opens a maximized window and runs a main loop
+- draws one 100x100 square made of two triangles, with a different color at each corner (red, green, blue, yellow) blended smoothly between them
+- moves the camera left at 50 units per second, so the square slides to the right
+- records keyboard and mouse state through GLFW callbacks (nothing reads it yet)
+
+**How the classes relate:**
+
+```
+Main
+ └─ Window                singleton: owns the OS window, the main loop, the active Scene
+     ├─ KeyListener       keyboard state, filled in by a GLFW callback
+     ├─ MouseListener     mouse state, filled in by GLFW callbacks
+     ├─ Time              clock used for delta time
+     └─ Scene             abstract: every scene provides init() and update(dt)
+         ├─ LevelEditorScene   active scene: owns a Camera and a Shader, draws the square
+         └─ LevelScene         empty placeholder (not reachable right now, see section 8)
+
+Camera     builds the view and projection matrices
+Shader     loads, compiles, and activates a GLSL shader, and uploads uniforms
+```
+
+---
+
+## 2. Project layout and setup
+
+```
+GameEngine/
+├── build.gradle
+├── assets/
+│   └── shaders/
+│       └── default.glsl          vertex + fragment shader in one file
+└── src/main/java/
+    ├── jade/       Main, Window, Scene, LevelEditorScene, LevelScene,
+    │               Camera, KeyListener, MouseListener
+    ├── renderer/   Shader
+    └── util/       Time
+```
+
+**Packages.** A package is a namespace, and by convention it mirrors the folder structure. Classes in the same package use each other by short name. Classes in another package need an `import` (for example `Window` imports `util.Time`, and `LevelEditorScene` imports `renderer.Shader`).
+
+**The shader path** `"assets/shaders/default.glsl"` is relative to the *working directory* when the program runs, which is normally the project root. If you run from somewhere else the file won't be found.
+
+**Gradle (`build.gradle`).** Gradle downloads the libraries and puts them on the classpath so the compiler and the JVM can find them. Each LWJGL module is listed twice:
+
+- the Java classes (`org.lwjgl:lwjgl-glfw`)
+- the native library for the operating system (`org.lwjgl:lwjgl-glfw::$lwjglNatives`)
+
+`lwjglNatives` must match the OS (`natives-linux`, `natives-windows`, `natives-macos`). A mismatch causes an `UnsatisfiedLinkError` at runtime.
+
+**Gradle vs imports.** Gradle makes classes *available*. `import` statements make their *names usable* in a given file. Gradle never writes imports for you.
+
+**Name clash to remember.** Java has its own `java.awt.Window`. If an IDE auto-imports it, `Window` means the wrong class. No file should import `java.awt.Window` or `java.awt.*`.
+
+**macOS only:** the JVM needs the argument `-XstartOnFirstThread`.
+
+---
+
+## 3. Libraries and how they fit together
+
+| Layer | What it is | Responsibility |
+|---|---|---|
+| OpenGL | graphics API implemented by the GPU driver | tells the GPU what to draw; cannot create windows |
+| GLFW | small C library | creates windows and OpenGL contexts, delivers input and window events |
+| LWJGL | Java bindings | lets Java call GLFW and OpenGL (C code) |
+| JOML | Java math library | `Matrix4f`, `Vector2f`, `Vector3f` for the camera |
+
+An **OpenGL context** is the object that holds all of OpenGL's state. OpenGL calls apply to whichever context is current on the calling thread. GLFW creates the context together with the window, and `glfwMakeContextCurrent` makes it current.
+
+---
+
+## 4. Startup and shutdown
+
+1. `Main.main` calls `Window.get().run()`.
+2. `run()` calls `init()`: creates the window, registers input callbacks, sets up OpenGL, loads the first scene.
+3. `run()` calls `loop()`, which runs once per frame until the window is closed.
+4. `run()` then releases native resources in reverse order of creation:
+
+```java
+glfwFreeCallbacks(glfwWindow);       // callbacks attached to the window
+glfwDestroyWindow(glfwWindow);       // the window itself
+glfwTerminate();                     // the GLFW library
+glfwSetErrorCallback(null).free();   // the error callback
+```
+
+GLFW holds native memory that Java's garbage collector cannot free, so we release it manually.
+
+---
+
+## 5. Window and the game loop
+
+### Singleton
+
+`Window` has a `private` constructor and a `static get()` that creates the instance on first use and returns the same one afterwards. This guarantees one window exists, and lets any class reach it with `Window.get()`.
+
+### Fields
+
+- `width`, `height`, `title`: window settings (1920x1080, "Jade"). They are only used when creating the window.
+- `glfwWindow`: a `long` handle (a native pointer) that identifies the window to GLFW
+- `r, g, b, a`: the clear color (starts white), public so scenes can change it
+- `window`: the single instance
+- `currentScene`: static, the scene that is running. Its type is `Scene`, so it can hold any subclass.
+
+### init(), in order
+
+1. **Error callback.** `GLFWErrorCallback.createPrint(System.err).set()` makes GLFW print its errors. Set first so later failures are reported.
+2. **`glfwInit()`**. Returns false on failure, so we throw.
+3. **Window hints.** `glfwDefaultWindowHints()` resets options. `GLFW_VISIBLE = false` creates the window hidden to avoid a blank flash. `GLFW_MAXIMIZED = true` makes it fill the screen.
+4. **`glfwCreateWindow`** returns the window handle. `NULL` (0) means failure, so we throw.
+5. **Input callbacks** (see section 7).
+6. **`glfwMakeContextCurrent`**: the window's OpenGL context becomes active on this thread.
+7. **`glfwSwapInterval(1)`**: V-sync. Buffer swaps wait for the monitor refresh, which caps the frame rate and prevents tearing.
+8. **`glfwShowWindow`**: reveals the window now that setup is done.
+9. **`GL.createCapabilities()`**: required. It looks up the OpenGL functions in the driver for the current context. Without it, every OpenGL call crashes. It must come after the context is current.
+10. **`Window.changeScene(0)`**: loads the first scene. It must come after `GL.createCapabilities()` because the scene's `init()` makes OpenGL calls.
+
+### loop(), once per frame
+
+```java
+while (!glfwWindowShouldClose(glfwWindow)) {
+    glfwPollEvents();                        // 1. process OS events; input callbacks fire here
+    glClearColor(r, g, b, a);                // 2. set the clear color (stores it, draws nothing)
+    glClear(GL_COLOR_BUFFER_BIT);            //    fill the screen with it
+    if (dt >= 0) currentScene.update(dt);    // 3. run the scene (skipped on the first frame)
+    glfwSwapBuffers(glfwWindow);             // 4. show the finished frame
+    // 5. compute dt for the next frame (section 6)
+}
+```
+
+**Double buffering.** One buffer is shown while the next frame is drawn into a hidden one. `glfwSwapBuffers` exchanges them so you never see a half-drawn frame. With V-sync on, this call also paces the loop.
+
+**Why `glfwPollEvents` matters.** If it isn't called every frame, the window freezes and the OS reports it as not responding.
+
+---
+
+## 6. Time and delta time
+
+### Time.java
+
+```java
+public static float timeStarted = System.nanoTime();   // see the bug note below
+
+public static float getTime() {
+    return (float)((System.nanoTime() - timeStarted) * 1E-9);   // nanoseconds -> seconds
+}
+```
+
+`System.nanoTime()` is a high-resolution clock whose absolute value means nothing. Only differences between two readings are meaningful. `timeStarted` is set when the `Time` class is first loaded, which happens at the first call to `Time.getTime()` (at the top of `loop()`). So `getTime()` is "seconds since the game loop started".
+
+> **Bug: `timeStarted` should be a `long`.** A `float` keeps only about 7 significant digits, but `nanoTime()` is a huge number (often 10^13 to 10^15 on Linux, since it counts from boot). Storing it in a `float` rounds it to the nearest several milliseconds, and the subtraction is done in `float` too. The result is that `dt` jumps in coarse steps (0, ~8 ms, ~17 ms) instead of being smooth, which causes jittery movement and FPS readouts. How bad it is depends on how long the computer has been on. Fix:
+>
+> ```java
+> private static final long timeStarted = System.nanoTime();
+> ```
+>
+> `getTime()` can stay as it is.
+
+### Delta time in the loop
+
+`dt` is how long the previous frame took, in seconds.
+
+```java
+float beginTime = Time.getTime();
+float dt = -1.0f;                  // -1: there is no previous frame to measure yet
+...
+endTime = Time.getTime();
+dt = endTime - beginTime;          // duration of the frame that just finished
+beginTime = endTime;               // this frame's end is the next frame's start
+```
+
+`dt` starts at -1 so the first frame skips `update` (the `if (dt >= 0)` check), because there's nothing to measure yet.
+
+**Rule: anything that changes over time is multiplied by `dt`.** `camera.position.x -= dt * 50.0f` moves the camera 50 units per second whether the game runs at 30 or 300 FPS. Without `dt`, speed would depend on the computer. FPS is `1 / dt`.
+
+---
+
+## 7. Input
+
+### How input gets from the OS into your code
+
+In `init()`, `Window` registers functions that GLFW calls when events happen:
+
+```java
+glfwSetCursorPosCallback(glfwWindow, MouseListener::mousePosCallback);
+glfwSetMouseButtonCallback(glfwWindow, MouseListener::mouseButtonCallback);
+glfwSetScrollCallback(glfwWindow, MouseListener::mouseScrollCallback);
+glfwSetKeyCallback(glfwWindow, KeyListener::keyCallback);
+```
+
+`MouseListener::mousePosCallback` is a **method reference**: we pass the function itself, we don't call it. GLFW calls it later with the event data. The parameters must match what GLFW sends (for example `(long window, int key, int scancode, int action, int mods)` for keys).
+
+The callbacks fire *inside* `glfwPollEvents()`, on the main thread, at the start of each frame. So by the time `update(dt)` runs, the listeners already hold the latest state.
+
+**Design.** Each listener is a singleton that stores the state, and the callbacks and getters are `static` methods that call `get()` to reach it. The callbacks must be `static` so they can be passed as `Class::method` references without an instance.
+
+### KeyListener
+
+```java
+private boolean keyPressed[] = new boolean[350];   // one slot per GLFW key code
+```
+
+- `keyCallback` sets `keyPressed[key] = true` on `GLFW_PRESS` and `false` on `GLFW_RELEASE`. `GLFW_REPEAT` (held-key repeats) is ignored, which is fine because the state is already `true`.
+- `isKeyPressed(int keyCode)` returns whether the key is **currently held down**. It does not tell you "was pressed this frame". For one-shot actions, track your own flag, as the old `changingScene` check did.
+- Use the `GLFW_KEY_*` constants (for example `GLFW_KEY_SPACE`), not `java.awt.event.KeyEvent`. The values differ for most keys.
+
+### MouseListener
+
+State: current position (`xPos`, `yPos`), previous position (`lastX`, `lastY`), scroll (`scrollX`, `scrollY`), `mouseButtonPressed[3]` (buttons 0, 1, 2 = left, right, middle) and `isDragging`.
+
+| Callback | What it does |
+|---|---|
+| `mousePosCallback` | `last = current`, then `current = new position`, then `isDragging = any button down` |
+| `mouseButtonCallback` | on press, sets the button's slot to `true`; on release sets it to `false` and clears `isDragging`. Button ids beyond the array length are ignored to avoid an index error. |
+| `mouseScrollCallback` | stores the scroll offsets (`xOffset` horizontal, `yOffset` vertical) |
+
+**Getters:** `getX()`, `getY()`, `getDx()`, `getDy()`, `getScrollX()`, `getScrollY()`, `isDragging()`, `mouseButtonDown(button)`.
+
+- `getDx()` is `lastX - xPos`: how far the mouse moved *between its two most recent position events*, with the sign reversed (moving right gives a negative number).
+- GLFW's origin is the **top-left** corner, so `y` increases downward.
+- **`endFrame()`** is meant to run once at the end of every frame. It zeroes the scroll and sets `last = current`, so that when the mouse stops, `getDx()`/`getDy()` return 0 instead of the last movement. **It is currently never called** (see section 13).
+
+---
+
+## 8. Scenes
+
+### Scene (abstract)
+
+```java
+public abstract class Scene {
+    protected Camera camera;
+    public void init() { }                  // optional setup, overridden when needed
+    public abstract void update(float dt);  // must be implemented by every scene
+}
+```
+
+`abstract` means you can't write `new Scene()`; it only defines the contract. The compiler enforces that every subclass implements `update`. `camera` is `protected`, so subclasses can use it directly.
+
+### Scene lifecycle
+
+1. `changeScene` creates the object (`new LevelEditorScene()`)
+2. `changeScene` calls `init()`: one-time setup, such as creating the camera and the OpenGL objects
+3. `update(dt)` is called every frame
+
+Setup lives in `init()` rather than the constructor so that the scene object exists first, and heavy setup (OpenGL calls) runs at a moment that is explicit and happens after the OpenGL context is ready.
+
+### Polymorphism
+
+`Window` stores the active scene as a plain `Scene`:
+
+```java
+currentScene.update(dt);
+```
+
+At runtime the object is a `LevelEditorScene` (or a `LevelScene`), and Java automatically calls that class's version of `update`. `Window` never needs to know which scene it is running, so new scenes can be added without touching the loop.
+
+### Switching scenes
+
+```java
+public static void changeScene(int newScene) {
+    switch (newScene) {
+        case 0: currentScene = new LevelEditorScene(); currentScene.init(); break;
+        case 1: currentScene = new LevelScene();       currentScene.init(); break;
+        default: assert false : "Unknown scene '" + newScene + "'";
+    }
+}
+```
+
+`static`, so any class can call `Window.changeScene(1)`. The numbers are IDs we chose. `assert` only runs when the JVM has `-ea`; without it an unknown ID is silently ignored.
+
+### LevelEditorScene (the active scene)
+
+It does three things: it sets up the geometry (section 10), loads the shader (section 11), and draws every frame.
+
+**`init()`:**
+1. creates the camera at (0, 0): `new Camera(new Vector2f())`
+2. loads and compiles the shader from `assets/shaders/default.glsl`
+3. creates the VAO, VBO, and EBO and uploads the vertex data (section 10)
+
+**`update(dt)`:**
+1. `camera.position.x -= dt * 50.0f`: moves the camera left, so the square slides right (about 25 seconds to leave a 1280-unit-wide view)
+2. `defaultShader.use()`, then uploads `uProjection` and `uView`
+3. binds the VAO, enables the attribute arrays, and calls `glDrawElements`
+4. unbinds everything: attribute arrays, VAO, shader
+
+### LevelScene
+
+An empty placeholder. Its constructor resets the clear color to white. **Nothing calls `changeScene(1)` right now** (the old "press space to fade out" transition was removed from `LevelEditorScene`), so it can't be reached. It also never creates a camera, so if its `update` ever used `camera` it would crash with a null pointer.
+
+---
+
+## 9. Camera
+
+The GPU only draws positions between -1 and 1 on each axis (normalized device coordinates). The camera converts world coordinates into that range with two matrices.
+
+- **View matrix**: moves the world so it is positioned relative to the camera.
+- **Projection matrix**: maps the visible part of that world into the -1 to 1 range.
+
+### Fields
+
+- `position` (`Vector2f`): where the camera sits in the world
+- `projectionMatrix`, `viewMatrix` (`Matrix4f`): a new `Matrix4f` starts as the identity matrix ("do nothing")
+
+### adjustProjection()
+
+```java
+projectionMatrix.identity();
+projectionMatrix.ortho(0.0f, 32.0f * 40.0f, 0.0f, 32.0f * 21.0f, 0.0f, 100.0f);
+```
+
+`ortho` is an **orthographic** projection: objects stay the same size regardless of distance, which is what 2D needs. Arguments are `(left, right, bottom, top, near, far)`:
+
+| Axis | Range | Meaning |
+|---|---|---|
+| x | 0 to 1280 | 40 tiles of 32 units |
+| y | 0 to 672 | 21 tiles of 32 units |
+| z | 0 to 100 | depth range in front of the camera |
+
+World (0, 0) maps to the bottom-left of the screen and (1280, 672) to the top-right.
+
+`identity()` is called first because `ortho` multiplies onto whatever the matrix already contains. Without the reset, calling `adjustProjection()` again would stack transformations.
+
+### getViewMatrix()
+
+```java
+viewMatrix.identity();
+viewMatrix.lookAt(eye:    (position.x, position.y, 20),
+                  center: (position.x, position.y, -1),   // cameraFront + position
+                  up:     (0, 1, 0));
+```
+
+- **eye**: where the camera is. z = 20 keeps sprites at z = 0 inside the near/far range (0 to 100); a camera at z = 0 would put them on the near plane and risk clipping.
+- **center**: the point the camera looks at. It sits straight ahead along -z, so the camera looks straight down at the 2D world.
+- **up**: +y is up on screen.
+
+Because the camera looks straight down -z, the result is effectively a translation by `(-x, -y, -20)`. The world moves opposite to the camera: **moving the camera right makes everything slide left**.
+
+### Important consequence
+
+The projection starts at 0 (not at -640, as in a centered view), so **`position` is the bottom-left corner of the visible area, not the center**. Camera at (100, 50) shows x from 100 to 1380 and y from 50 to 722.
+
+Also: `getViewMatrix()` rebuilds the matrix from `position` on every call, which is why changing `position` is enough to scroll the scene.
+
+---
+
+## 10. Geometry on the GPU
+
+The square is described once in `init()` and uploaded to GPU memory. Each frame the scene only tells the GPU to draw it.
+
+### The data
+
+```java
+// position (x, y, z)         color (r, g, b, a)
+100.5f,   0.5f, 0.0f,         1.0f, 0.0f, 0.0f, 1.0f,   // 0  bottom right, red
+  0.5f, 100.5f, 0.0f,         0.0f, 1.0f, 0.0f, 1.0f,   // 1  top left,     green
+100.5f, 100.5f, 0.0f,         0.0f, 0.0f, 1.0f, 1.0f,   // 2  top right,    blue
+  0.5f,   0.5f, 0.0f,         1.0f, 1.0f, 0.0f, 1.0f,   // 3  bottom left,  yellow
+```
+
+Each vertex is 7 floats. These are **world coordinates** (the square spans 0.5 to 100.5 on both axes), because the camera matrices convert them to the screen. *(The diagram comment above the array in the code still shows the old -0.5 to 0.5 coordinates and is out of date.)*
+
+A square is two triangles. The **element array** lists triangles by vertex index:
+
+```java
+int[] elementArray = { 2, 1, 0,     // top-right triangle
+                       0, 1, 3 };   // bottom-left triangle
+```
+
+```
+ 1 (green) ────────── 2 (blue)
+    │ ╲    A (2,1,0)     │
+    │   ╲                │
+    │     ╲              │
+    │ B (0,1,3) ╲        │
+ 3 (yellow) ────────── 0 (red)
+```
+
+Indices avoid repeating shared corners: 4 vertices plus 6 indices instead of 6 full vertices. Both triangles are in counter-clockwise order, which is the convention. (Winding only has an effect if face culling is turned on, which it isn't by default.)
+
+### The three OpenGL objects
+
+| Object | What it holds |
+|---|---|
+| **VBO** (vertex buffer object) | the raw vertex data in GPU memory |
+| **EBO** (element buffer object) | the index list in GPU memory |
+| **VAO** (vertex array object) | a saved *configuration*: which EBO is bound, and how the VBO's bytes are split into attributes |
+
+Binding the VAO later restores the whole setup with one call, which is why `update` can draw with a single `glBindVertexArray`.
+
+### Setup in init(), in order
+
+1. **`glGenVertexArrays` + `glBindVertexArray`**: create the VAO and make it active. This comes first, because the VAO records what happens after it.
+2. **Fill a `FloatBuffer`**: `BufferUtils.createFloatBuffer(...)` makes native memory (OpenGL is a C API and can't read Java arrays). `put(vertexArray)` copies the data in and moves the buffer's position to the end; **`flip()`** resets the position to 0 and marks the end of the data, so OpenGL reads from the start.
+3. **VBO**: `glGenBuffers`, `glBindBuffer(GL_ARRAY_BUFFER, vboID)`, `glBufferData(..., GL_STATIC_DRAW)`. `GL_STATIC_DRAW` is a hint: written once, drawn many times.
+4. **EBO**: the same steps with an `IntBuffer` and `GL_ELEMENT_ARRAY_BUFFER`. The EBO binding is stored inside the VAO.
+5. **Attribute pointers** describe how to read each vertex out of the VBO:
+
+```java
+int vertexSizeBytes = (3 + 4) * 4;   // stride: 7 floats * 4 bytes = 28 bytes per vertex
+glVertexAttribPointer(0, 3, GL_FLOAT, false, vertexSizeBytes, 0);        // position
+glEnableVertexAttribArray(0);
+glVertexAttribPointer(1, 4, GL_FLOAT, false, vertexSizeBytes, 3 * 4);    // color
+glEnableVertexAttribArray(1);
+```
+
+   - first argument: the attribute slot, which must match `layout (location=N)` in the vertex shader
+   - second: how many floats (3 for xyz, 4 for rgba)
+   - **stride**: bytes from the start of one vertex to the start of the next
+   - **offset**: where this attribute starts inside a vertex (position at byte 0, color after the 3 position floats = byte 12)
+
+### Drawing in update()
+
+```java
+glBindVertexArray(vaoID);
+glEnableVertexAttribArray(0);
+glEnableVertexAttribArray(1);
+glDrawElements(GL_TRIANGLES, elementArray.length, GL_UNSIGNED_INT, 0);
+glDisableVertexAttribArray(0);
+glDisableVertexAttribArray(1);
+glBindVertexArray(0);
+```
+
+`glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0)` means: take 6 indices from the EBO (type unsigned int, starting at offset 0) and draw each group of 3 as a triangle.
+
+*Note:* whether an attribute array is enabled is stored in the VAO. So the enables in `init()` already stick, and the per-frame enable/disable calls are redundant (harmless, but they could be removed).
+
+---
+
+## 11. Shaders
+
+A shader is a small program that runs on the GPU. Drawing needs two: a **vertex shader** (once per vertex) and a **fragment shader** (once per pixel covered).
+
+### default.glsl
+
+Both shaders live in one file. `#type vertex` and `#type fragment` are **not GLSL**; they are markers that `Shader` uses to split the file before compiling.
+
+```glsl
+#type vertex
+#version 330 core
+layout (location=0) in vec3 aPos;      // attribute: per-vertex position
+layout (location=1) in vec4 aColor;    // attribute: per-vertex color
+
+uniform mat4 uProjection;              // uniform: same for every vertex in a draw call
+uniform mat4 uView;
+
+out vec4 fColor;
+
+void main(){
+    fColor = aColor;
+    gl_Position = uProjection * uView * vec4(aPos, 1.0);   // NOTE: the file currently says uvec4, see section 13
+}
+
+#type fragment
+#version 330 core
+in vec4 fColor;
+out vec4 color;
+void main(){ color = fColor; }
+```
+
+**Vertex shader.** `aPos` and `aColor` receive the data from the VBO through the attribute slots (0 and 1) set up with `glVertexAttribPointer`. It passes the color along and computes `gl_Position`, the required output: where this vertex lands on screen.
+
+- `vec4(aPos, 1.0)`: matrices are 4x4, so positions need 4 components. With `w = 1` the point is treated as a *position*, so the view matrix's translation applies (`w = 0` would mean a direction and ignore translation).
+- Matrix multiplication applies right to left: first the view matrix, then the projection matrix. There's no model matrix yet; objects are placed directly in world space through their vertex coordinates.
+
+**Fragment shader.** `fColor` receives the vertex shader's `out fColor` (the names must match). The GPU **interpolates** it across the triangle, so a red corner and a blue corner produce a smooth gradient with no extra code. `color` is the final pixel color.
+
+**Attribute vs uniform:** an attribute is per vertex (position, color). A uniform is per draw call (the camera matrices).
+
+### Shader.java
+
+**Fields:** `shaderProgramID`, `vertexSource`, `fragmentSource`, `filepath`.
+
+**Constructor: reading and splitting the file.**
+
+```java
+String source = new String(Files.readAllBytes(Paths.get(filepath)));
+String[] splitString = source.split("(#type)( )+([a-zA-Z]+)");
+```
+
+The regex matches `#type`, then one or more spaces, then a word. Splitting on it gives:
+
+- `splitString[0]`: text before the first marker (empty)
+- `splitString[1]`: text between the first and second markers
+- `splitString[2]`: text after the second marker
+
+Then the code finds the *word* after each `#type` (`"vertex"` or `"fragment"`) by locating `#type`, skipping 6 characters (`"#type "`), and reading to the end of the line. It uses those words to decide whether `splitString[1]` and `[2]` are the vertex or the fragment source, so the two halves can appear in either order. An unknown word throws an `IOException`. If the file can't be opened, the exception is printed and `assert false` fires (only with `-ea`); otherwise the sources stay `null`.
+
+**`compile()`** (must be called after the OpenGL context exists):
+
+1. `glCreateShader(GL_VERTEX_SHADER)`, `glShaderSource`, `glCompileShader`: create a shader object, give it the source, compile it
+2. check `glGetShaderi(..., GL_COMPILE_STATUS)`; on failure print `glGetShaderInfoLog`
+3. the same for the fragment shader
+4. `glCreateProgram`, `glAttachShader` (twice), `glLinkProgram`: combine both into one **shader program**
+5. check `GL_LINK_STATUS` the same way
+
+Failures print a message and then `assert false`, which only stops the program under `-ea`. Without it, the program keeps running with a broken shader and you see a blank or black result, so **read the console for "compilation failed"**.
+
+**`use()`** = `glUseProgram(shaderProgramID)`: makes this program the active one. **`detach()`** = `glUseProgram(0)`: deactivates it.
+
+**`uploadMat4f(name, matrix)`:**
+
+```java
+int varLocation = glGetUniformLocation(shaderProgramID, varName);
+FloatBuffer matBuffer = BufferUtils.createFloatBuffer(16);
+mat4.get(matBuffer);
+glUniformMatrix4fv(varLocation, false, matBuffer);
+```
+
+- `glGetUniformLocation` finds the uniform by name. The string must match the name in the shader **exactly**; a mismatch (or an unused uniform that the compiler removed) returns -1 and OpenGL silently ignores the upload.
+- the `FloatBuffer` holds the 16 numbers of a 4x4 matrix in native memory
+- `false` means "don't transpose", because both JOML and OpenGL store matrices column by column
+- `use()` must be called **before** uploading, because `glUniform...` applies to the currently active program
+
+### Data flow
+
+```
+Camera (Java)            Shader (Java)                        default.glsl (GPU)
+getProjectionMatrix() ─┐
+                       ├─> uploadMat4f("uProjection") ───────> uniform mat4 uProjection
+getViewMatrix()       ─┘   uploadMat4f("uView")        ──────> uniform mat4 uView
+                                                                      │
+              VBO vertex (aPos) ───────────────────────────> uProjection * uView * position
+                                                                      │
+                                                              gl_Position (screen position)
+```
+
+---
+
+## 12. One frame, start to finish
+
+1. `glfwPollEvents()`: GLFW processes OS events; the callbacks update `KeyListener` and `MouseListener`.
+2. `glClearColor` + `glClear`: the screen is filled with the clear color (white).
+3. `currentScene.update(dt)` (`LevelEditorScene`):
+   1. the camera moves left by `dt * 50`
+   2. the shader is activated and the two camera matrices are uploaded as uniforms
+   3. the VAO is bound and `glDrawElements` is called
+4. On the GPU, for each of the 4 vertices the vertex shader computes `uProjection * uView * position`, giving its screen position.
+5. The GPU works out which pixels the two triangles cover. For each pixel, the fragment shader outputs the interpolated color.
+6. `glfwSwapBuffers`: the finished frame is shown.
+7. `dt` is computed for the next frame.
+
+---
+
+## 13. Known issues and gotchas
+
+### Bugs worth fixing first
+
+1. **`default.glsl` uses `uvec4`.** It must be `vec4`. `uvec4` is a vector of unsigned integers; depending on the driver, the shader either fails to compile or the positions get truncated to whole numbers.
+2. **`Time.timeStarted` is a `float`.** It should be a `long` (see section 6). This makes `dt` jump in coarse steps.
+3. **`MouseListener.endFrame()` is never called.** Add `MouseListener.endFrame();` at the end of each iteration of `loop()` (after `update`). Until then, scroll values never reset and `getDx()/getDy()` keep reporting the last movement after the mouse stops.
+4. **`KeyListener.keyCallback` can crash.** For keys GLFW doesn't recognize, `key` is -1, and `keyPressed[-1]` throws `ArrayIndexOutOfBoundsException` inside the callback. Guard it with `if (key >= 0 && key < keyPressed.length)` (same for `isKeyPressed`).
+5. **`assert` is only active with `-ea`.** The shader error handling and `changeScene`'s default case rely on it. Without `-ea`, errors are printed (or ignored) and the program carries on.
+6. **`LevelScene` is unreachable and has no camera** (section 8).
+
+### Cleanup and small things
+
+- **Dead code in `LevelEditorScene`:** `vertexShaderSrc`, `fragmentShaderSrc`, `vertexID`, `fragmentID`, `shaderProgram` are left over from before the `Shader` class and are never used. (The inline vertex shader doesn't even use the camera.)
+- **Outdated diagram comment** above `vertexArray` (shows -0.5 to 0.5; real values are 0.5 to 100.5).
+- **Debug prints in the `Shader` constructor** (`index`, `eol`, and both full sources). Remove once it works.
+- **Unused import** `org.lwjgl.system.windows.WINDOWPLACEMENT` in `LevelScene` (Windows-only).
+- **Per-frame work that could be done once:** the projection matrix is uploaded every frame but never changes; `uploadMat4f` allocates a new native buffer on every call (`MemoryStack` avoids that); the attribute enable/disable calls are redundant with the VAO.
+- **Shader objects are never deleted** after linking (`glDeleteShader`). Harmless at this size.
+- **Aspect ratio.** The projection is 40:21 (about 1.9) but the window is probably 16:9 (about 1.78), so things look slightly stretched.
+- **Window resizing isn't handled.** There's no framebuffer-size callback, so `glViewport` and the projection aren't updated when the window size changes.
+- **`getDx()` sign:** it returns `last - current`, so moving right gives a negative number. Flip it if you want the usual direction.
+- **Magic numbers:** `32.0f * 40.0f` could be named constants (`TILE_SIZE`, `TILES_WIDE`, `TILES_TALL`).
+- **`Camera.position` is shared, not copied.** If the caller keeps its `Vector2f` and changes it, the camera moves too.
+
+---
+
+## 14. Glossary
+
+- **Singleton**: a class that allows only one instance, reached through a static `get()`.
+- **Abstract class**: a class that can't be instantiated and may require subclasses to implement certain methods.
+- **Polymorphism**: calling a method on a parent type and having the child's version run.
+- **Callback**: a function you hand to a library so it can call you back when something happens.
+- **Method reference** (`Class::method`): passes a method as a value without calling it.
+- **Delta time (dt)**: seconds taken by the previous frame; used to make movement independent of frame rate.
+- **Double buffering**: draw into a hidden buffer, then swap it with the visible one.
+- **V-sync**: buffer swaps wait for the monitor's refresh.
+- **OpenGL context**: the object that holds OpenGL state; calls apply to the current one.
+- **Native memory / NIO buffer**: memory outside the Java heap that C libraries can read. `flip()` prepares a buffer for reading after writing.
+- **VBO**: GPU buffer holding vertex data.
+- **EBO**: GPU buffer holding indices that say which vertices form each triangle.
+- **VAO**: saved description of how vertex data is laid out and which buffers it uses.
+- **Stride**: bytes from one vertex to the next. **Offset**: where an attribute starts inside a vertex.
+- **Shader program**: the compiled and linked vertex + fragment shaders.
+- **Uniform**: shader value that is the same for every vertex in a draw call.
+- **Attribute**: per-vertex shader input (position, color).
+- **Vertex shader**: runs once per vertex; outputs its screen position.
+- **Fragment shader**: runs once per covered pixel; outputs its color.
+- **Interpolation**: the GPU blending vertex values across a triangle's pixels.
+- **Orthographic projection**: no perspective, so objects keep their size at any distance.
+- **Normalized device coordinates**: the -1 to 1 range the GPU draws in.
+- **View matrix**: positions the world relative to the camera. **Projection matrix**: maps the visible region into normalized device coordinates.
+
+---
+
+## 15. Keeping this doc up to date
+
+When you finish a feature, spend a few minutes updating the matching section:
+
+| If you change... | Update section |
+|---|---|
+| `Window`, the loop, GLFW setup | 5 |
+| `Time` | 6 |
+| `KeyListener`, `MouseListener` | 7 |
+| `Scene` or any scene class | 8 |
+| `Camera` | 9 |
+| vertex data, buffers, drawing | 10 |
+| `Shader` or `.glsl` files | 11 |
+| a bug is fixed | 13 (remove or tick it off) |
+
+When the file gets long, split it into a `docs/` folder with one file per section and a `docs/README.md` that links to each one.
+
+---
+
+## 16. Things I don't understand yet
+
+Add questions here as they come up, and cross them off when answered.
+
+- [ ]
+- [ ]
+- [ ]
