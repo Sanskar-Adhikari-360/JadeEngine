@@ -1,5 +1,6 @@
 package jade;
 
+import org.joml.Vector2f;
 import org.lwjgl.BufferUtils;
 import renderer.Shader;
 
@@ -47,12 +48,12 @@ public class LevelEditorScene extends Scene {
         //     3 ───────────────── 0
         //(-0.5, -0.5)          (0.5, -0.5)
 
-        // We are storing the position of the vertices and there colour in this array
+        // We are storing the position of the vertices and there color in this array
         // position             // color
-        0.5f,   -0.5f,  0.0f,        1.0f, 0.0f, 0.0f, 1.0f, // Bottom right    0
-        -0.5f,  0.5f,   0.0f,        0.0f, 1.0f, 0.0f, 1.0f, // Top left        1
-        0.5f,   0.5f,   0.0f,        0.0f, 0.0f, 1.0f, 1.0f, // Top right       2
-        -0.5f,  -0.5f,  0.0f,        1.0f, 1.0f, 0.0f, 1.0f, // Bottom left     3
+        100.5f,   0.5f,  0.0f,        1.0f, 0.0f, 0.0f, 1.0f, // Bottom right    0
+        0.5f, 100.5f,   0.0f,        0.0f, 1.0f, 0.0f, 1.0f, // Top left        1
+        100.5f,   100.5f,   0.0f,        0.0f, 0.0f, 1.0f, 1.0f, // Top right       2
+        0.5f,  0.5f,  0.0f,        1.0f, 1.0f, 0.0f, 1.0f, // Bottom left     3
     };
 
     // IMPORTANT: Must be in counter-clockwise order
@@ -75,6 +76,8 @@ public class LevelEditorScene extends Scene {
 
     @Override
     public void init(){
+        // initializing the camera
+        this.camera = new Camera(new Vector2f());
         defaultShader = new Shader("assets/shaders/default.glsl");
         defaultShader.compile();
         // =============================================================
@@ -117,7 +120,11 @@ public class LevelEditorScene extends Scene {
 
     @Override
     public void update(float dt) {
+        camera.position.x -= dt * 50.0f;
         defaultShader.use();
+        // Uploads the matrix to the gpu so if there is any changes in camera it gets updated every frame but right now it sends it no matter what so it's not really optimal
+        defaultShader.uploadMat4f("uProjection",camera.getProjectionMatrix());
+        defaultShader.uploadMat4f("uView",camera.getViewMatrix());
         // Bind the VAO that we're using
         glBindVertexArray(vaoID);
 
