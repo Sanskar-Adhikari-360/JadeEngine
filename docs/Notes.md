@@ -578,7 +578,77 @@ getViewMatrix()       ─┘   uploadMat4f("uView")        ──────> u
 ```
 
 ---
+## 11b. Textures
 
+A **texture** is an image stored in GPU memory that shaders can read from `Texture.java` (package `renderer`) loads an image file, uploads it to the GPU, and provides `bind()` and `unbind()`.
+
+### How a texture gets onto a shape
+
+1. **Load and upload** (once, in the `Texture` constructor): the image file is decoded and copied into a GPU texture object.
+2. **UV coordinates** (in the vertex data): each vertex gets a `vec2` saying which point of the image it should show. UV (0, 0) is one corner of the image and (1, 1) is the opposite corner, whatever the image's pixel size.
+3. **Vertex shader**: passes the UV along as `fTexCoords`.
+4. **Interpolation**: just like colors, `fTexCoords` is blended across the triangle, so every pixel gets its own UV.
+5. **Fragment shader**: `texture(TEX_SAMPLER, fTexCoords)` looks up the image's color at that UV, and that becomes the pixel color.
+
+### Texture.java
+
+Fields: `filepath` (only used in error messages) and `texID` (an ID for the GPU texture object, like the VAO/VBO IDs). The path is relative to the working directory, like the shader path.
+
+**Constructor, step by step**
+
+1. `glGenTextures()` creates a texture object and returns its ID. `glBindTexture(GL_TEXTURE_2D, texID)` makes it the active texture. The parameter and upload calls that follow apply to the bound texture.
+2. **Wrapping** (`GL_TEXTURE_WRAP_S` / `_T`, both `GL_REPEAT`): what happens when a UV is outside 0 to 1. `GL_REPEAT` tiles the image. S is the horizontal axis and T the vertical, the texture versions of x and y. (`GL_CLAMP_TO_EDGE` would stretch the edge pixels instead.)
+3. **Filtering** (`GL_TEXTURE_MIN_FILTER` / `_MAG_FILTER`, both `GL_NEAREST`): how a pixel's color is chosen when the image is drawn *smaller* (MIN) or *larger* (MAG) than its real size. `GL_NEAREST` takes the single closest texel, so pixels stay sharp and blocky, which suits pixel art. `GL_LINEAR` blends neighboring texels for a smooth look.
+4. **Loading**: `stbi_load(filepath, width, height, channels, 0)` decodes the file using the STB library that ships with LWJGL (`lwjgl-stb` in `build.gradle`). It fills three one-element `IntBuffer`s with the width, height and channel count, and returns the pixels as a `ByteBuffer` in native memory. The final `0` means "keep the file's own channel count". It returns `null` if the file can't be loaded.
+5. **Uploading**: `glTexImage2D(GL_TEXTURE_2D, 0, format, width, height, 0, format, GL_UNSIGNED_BYTE, image)` copies the pixels to the GPU. The format depends on the channel count: 3 means `GL_RGB`, 4 means `GL_RGBA` (RGB plus alpha/transparency). Any other count (grayscale, for example) hits the `assert`. The first `0` is the mipmap level (the full-size image) and the second, after the height, is a legacy border argument that must be 0.
+6. **Cleanup**: `stbi_image_free(image)` releases the CPU copy of the pixels. The GPU keeps its own copy.
+
+**`bind()`** calls `glBindTexture(GL_TEXTURE_2D, texID)`, making this the texture the shader samples. **`unbind()`** binds texture 0, meaning "none".
+
+The constructor makes OpenGL calls, so it must run after the context exists (for example in a scene's `init()`). It also leaves the texture bound when it finishes.
+
+### Shader changes
+
+```glsl
+// vertex shader
+layout (location=2) in vec2 aTexCoords;    // new attribute: UV per vertex
+out vec2 fTexCoords;                        // passed on to the fragment shader
+...
+fTexCoords = aTexCoords;
+
+// fragment shader
+uniform sampler2D TEX_SAMPLER;              // the texture to read from
+in vec2 fTexCoords;
+...
+color = texture(TEX_SAMPLER, fTexCoords);
+```
+
+- **`location=2`** is a third attribute slot, next to position (0) and color (1). It must match `glVertexAttribPointer(2, ...)` in Java.
+- **`sampler2D`** is a uniform, but it holds a **texture unit number**, not the image. A GPU has several texture units (slots), and `glActiveTexture(GL_TEXTURE0 + n)` picks which one `bind()` affects. `shader.uploadInt("TEX_SAMPLER", n)` tells the shader which slot to read. Unit 0 is active by default and an unset sampler reads unit 0, so one texture works without extra code. Upload the slot explicitly anyway so it keeps working when you use more than one texture.
+- **`texture(sampler, uv)`** returns a `vec4` (RGBA).
+- The fragment shader no longer uses `fColor`, so the vertex colors stop showing. Use `color = fColor * texture(TEX_SAMPLER, fTexCoords);` to tint the image with them.
+- `uTime` is declared but unused. GLSL compilers remove unused uniforms, so its location is -1 and uploads are silently ignored. That's harmless.
+- `TEX_SAMPLER` must match the Java string exactly, like any uniform.
+
+### Vertex layout (check against your scene)
+
+If the scene now has UVs, each vertex should be 9 floats:
+
+```
+x y z   r g b a   u v
+```
+
+```java
+int positionsSize = 3, colorSize = 4, uvSize = 2, floatSizeBytes = 4;
+int vertexSizeBytes = (positionsSize + colorSize + uvSize) * floatSizeBytes;   // 36 bytes
+glVertexAttribPointer(2, uvSize, GL_FLOAT, false, vertexSizeBytes,
+                      (positionsSize + colorSize) * floatSizeBytes);           // offset 28
+glEnableVertexAttribArray(2);
+```
+
+The stride changes for **all three** attributes, not just the new one. Forgetting to update the stride on attributes 0 and 1 is the most common bug here.
+
+---
 ## 12. One frame, start to finish
 
 1. `glfwPollEvents()`: GLFW processes OS events; the callbacks update `KeyListener` and `MouseListener`.
