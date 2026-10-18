@@ -1,5 +1,7 @@
 package jade;
 
+import components.FontRenderer;
+import components.SpriteRenderer;
 import org.joml.Vector2f;
 import org.lwjgl.BufferUtils;
 import renderer.Shader;
@@ -14,29 +16,6 @@ import static org.lwjgl.opengl.GL30.*;
 
 public class LevelEditorScene extends Scene {
     // I don't understand graphics programming so no comment
-
-    // Vertex shader gls code
-    private String vertexShaderSrc = "#version 330 core\n" +
-            "layout (location=0) in vec3 aPos;\n" +
-            "layout (location=1) in vec4 aColor;\n" +
-            "\n" +
-            "out vec4 fColor;\n" +
-            "\n" +
-            "void main(){\n" +
-            "    fColor = aColor;\n" +
-            "    gl_Position = vec4(aPos,1.0);\n" +
-            "}";
-
-    // Fragment shader gls code
-    private String fragmentShaderSrc ="#version 330 core\n" +
-            "\n" +
-            "in vec4 fColor;\n" +
-            "\n" +
-            "out vec4 color;\n" +
-            "\n" +
-            "void main(){\n" +
-            "    color = fColor;\n" +
-            "}";
 
     // identifiers
     private int vertexID,fragmentID,shaderProgram;
@@ -73,17 +52,26 @@ public class LevelEditorScene extends Scene {
     private Shader defaultShader;
     private Texture testTexture;
 
+    GameObject testObj;
+    private boolean firstTime = false;
+
     public LevelEditorScene(){
 
     }
 
     @Override
     public void init(){
+        System.out.println("Creating test object");
+        this.testObj = new GameObject("test object");
+        this.testObj.addComponent(new SpriteRenderer());
+        this.testObj.addComponent(new FontRenderer());
+        this.addGameObjectToScene(this.testObj);
+
         // initializing the camera
         this.camera = new Camera(new Vector2f());
         defaultShader = new Shader("assets/shaders/default.glsl");
         defaultShader.compile();
-        this.testTexture = new Texture("assets/images/testImage.jpg");
+        this.testTexture = new Texture("assets/images/testImage.png");
         // =============================================================
         // Generate VAO, VBO, and EBO buffer objects, and send to GPU
         // =============================================================
@@ -154,6 +142,19 @@ public class LevelEditorScene extends Scene {
         glBindVertexArray(0);
 
         defaultShader.detach();
+
+        if (!firstTime) {
+            System.out.println("Creating Game object");
+            GameObject go = new GameObject("Game test 2");
+            go.addComponent(new SpriteRenderer());
+            this.addGameObjectToScene(go);
+            firstTime = true;
+        }
+
+        for (GameObject go : this.gameObjects){
+            go.update(dt);
+
+        }
     }
 
 }
