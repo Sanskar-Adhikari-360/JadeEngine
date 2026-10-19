@@ -6,8 +6,9 @@ package jade;
 import org.lwjgl.*;
 import org.lwjgl.glfw.*;
 import org.lwjgl.opengl.*;
-import util.Time;
 
+
+import java.sql.Time;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -132,7 +133,7 @@ public class Window {
     }
     public void loop() {
         // The time the game loop began in
-        float beginTime = Time.getTime();
+        float beginTime = (float)glfwGetTime();
         float endTime;
         // The dt is set to negative so the scene isn't updated on the first frame
         // the real dt is calculated on the end of the frame
@@ -153,7 +154,7 @@ public class Window {
             glfwSwapBuffers(glfwWindow);
 
             // The time it took to finish the game loop
-            endTime = Time.getTime();
+            endTime = (float)glfwGetTime();
             // Takes endTime and beginTime and gives us delta time
             dt = endTime - beginTime;
             // re-initializes the beginTime value to be equal to endTime for the next frame

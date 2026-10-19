@@ -6,8 +6,7 @@ import java.nio.ByteBuffer;
 import java.nio.IntBuffer;
 
 import static org.lwjgl.opengl.GL11.*;
-import static org.lwjgl.stb.STBImage.stbi_image_free;
-import static org.lwjgl.stb.STBImage.stbi_load;
+import static org.lwjgl.stb.STBImage.*;
 
 public class Texture {
     private String filepath;
@@ -33,10 +32,20 @@ public class Texture {
         IntBuffer width = BufferUtils.createIntBuffer(1);
         IntBuffer height = BufferUtils.createIntBuffer(1);
         IntBuffer channels = BufferUtils.createIntBuffer(1);
+        // Because OpenGL is a bitch and flips it so we have to unflip it by fliping it again
+        stbi_set_flip_vertically_on_load(true);
         ByteBuffer image = stbi_load(filepath, width, height, channels, 0);
-        System.out.println("Loaded " + filepath + ": " + width.get(0) + "x" + height.get(0)
-                + ", channels = " + channels.get(0));
 
+        if (image == null) {
+            throw new RuntimeException(
+                    "Failed to load texture: " + filepath + "\n" +
+                            org.lwjgl.stb.STBImage.stbi_failure_reason()
+            );
+        }
+
+        System.out.println("Loaded " + filepath + ": " +
+                width.get(0) + "x" + height.get(0) +
+                ", channels = " + channels.get(0));
 
         // Avoid error caused by having or not having image with alpha
         if (image != null){

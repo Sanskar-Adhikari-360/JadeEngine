@@ -320,6 +320,103 @@ An empty placeholder. Its constructor resets the clear color to white. **Nothing
 
 ---
 
+## 8b. GameObjects and components
+
+Instead of writing a separate class for every kind of thing in the game, the engine uses **component-based design** (the same idea Unity uses). A **GameObject** is a generic container with a name. Behavior comes from small **Component** objects attached to it. What an object can do depends on which components it has, not on what class it is.
+
+```
+Scene
+ └─ gameObjects: List<GameObject>
+      └─ GameObject  (name, components: List<Component>)
+           ├─ SpriteRenderer     a Component
+           ├─ FontRenderer       a Component
+           └─ ... any other Component
+```
+
+The scene talks only to GameObjects. A GameObject forwards calls to its components. Components reach each other only through their GameObject.
+
+### Where the files live
+
+`Component` and `GameObject` are in the `jade` package. Concrete components (`SpriteRenderer`, `FontRenderer`, and future ones) are in the `components` package and extend `jade.Component`.
+
+### Component
+
+```java
+public abstract class Component {
+    public GameObject gameObject = null;    // the object this component is attached to
+    public void start() { }                 // optional: called once, before the first update
+    public abstract void update(float dt);  // required: called every frame
+}
+```
+
+- **`gameObject`** is a back-reference to the owner, through which a component reaches its sibling components. It is `null` until `GameObject.addComponent` sets it, so it is still `null` inside a component's constructor.
+- **`start()`** is for setup that needs the owner or its other components. Do that here, not in the constructor, because by `start()` the component is attached and all of its object's components exist.
+- **`update(dt)`** is `abstract`, so every component must implement it, even with an empty body. `dt` is delta time (see section 6): multiply anything that changes over time by it.
+
+### GameObject
+
+| Member | What it does |
+|---|---|
+| `name` | label for the object (no getter yet) |
+| `components` | `ArrayList<Component>`, in the order they were added |
+| `addComponent(c)` | adds `c` to the list and sets `c.gameObject = this` |
+| `getComponet(Class<T>)` | returns the first component of that type, or `null` |
+| `removeComponent(Class<T>)` | meant to remove the first component of that type (currently broken, see section 13) |
+| `start()` | calls `start()` on every component, in order |
+| `update(dt)` | calls `update(dt)` on every component, in order |
+
+`start()` and `update` use an index-based `for` loop. A for-each loop over an `ArrayList` throws `ConcurrentModificationException` if the list changes while looping, and the index loop tolerates a component adding another component during the loop.
+
+**How `getComponet` works:**
+
+```java
+public <T extends Component> T getComponet(Class<T> componentClass) {
+    for (Component c : components) {
+        if (componentClass.isAssignableFrom(c.getClass())) {
+            return componentClass.cast(c);
+        }
+    }
+    return null;
+}
+```
+
+- `<T extends Component>` makes it a **generic method**. `T` is whichever component type the caller asks for. Passing `SpriteRenderer.class` tells Java that `T` is `SpriteRenderer`, so the result is already a `SpriteRenderer` and the caller needs no cast.
+- `isAssignableFrom` is true when the component's class is the requested class **or a subclass** of it, so asking for a parent type finds child components too.
+- `cast` converts the component to `T`. The `try/catch` around it in the code can never trigger, because `isAssignableFrom` has already checked the type.
+- Only the **first** match is returned, and the result is `null` if there is none, so always check for `null`:
+
+```java
+SpriteRenderer sprite = gameObject.getComponet(SpriteRenderer.class);
+if (sprite != null) {
+    // use sprite
+}
+```
+
+### Lifecycle
+
+1. **Create:** `new SpriteRenderer()`. `gameObject` is `null`.
+2. **Attach:** `go.addComponent(component)` sets `component.gameObject`.
+3. **Start:** `go.start()` calls each component's `start()` once.
+4. **Update:** every frame, `go.update(dt)` calls each component's `update(dt)`, in the order the components were added.
+
+**How the scene drives this.** The scene keeps a `List<GameObject> gameObjects`. `addGameObjectToScene(go)` adds an object to it. In `LevelEditorScene.update`, the scene runs its own drawing code first, then loops over `gameObjects` calling `go.update(dt)`.
+
+> **TODO, check against `Scene.java`:** write down which method calls `GameObject.start()` and when (for example, when the scene starts, or immediately inside `addGameObjectToScene` if the scene is already running). A component's `start()` never runs unless something calls it.
+
+Note that `addComponent` does not call `start()`. If you add a component to an object whose `start()` already ran, call that component's `start()` yourself.
+
+### Adding a new component
+
+1. Create a class in the `components` package that `extends Component` (import `jade.Component`).
+2. Implement `update(float dt)`, and override `start()` if it needs its owner or sibling components.
+3. Attach it with `gameObject.addComponent(new MyComponent())`.
+
+### Current state
+
+`SpriteRenderer` and `FontRenderer` are placeholders, named for what they are meant to become. Drawing is still done directly in `LevelEditorScene`. Later, rendering code will move into components like these, so each game object draws itself.
+
+---
+
 ## 9. Camera
 
 The GPU only draws positions between -1 and 1 on each axis (normalized device coordinates). The camera converts world coordinates into that range with two matrices.
@@ -454,6 +551,146 @@ glBindVertexArray(0);
 `glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0)` means: take 6 indices from the EBO (type unsigned int, starting at offset 0) and draw each group of 3 as a triangle.
 
 *Note:* whether an attribute array is enabled is stored in the VAO. So the enables in `init()` already stick, and the per-frame enable/disable calls are redundant (harmless, but they could be removed).
+
+---
+
+## 10b. Batch rendering (Renderer and RenderBatch)
+
+### The problem batching solves
+
+A **draw call** (`glDrawElements`) is a request to the GPU to draw something. Each call has fixed overhead on the CPU and in the driver, no matter how small the shape is. Drawing thousands of sprites with one call each is slow because of the number of calls, not because the GPU can't draw that many triangles.
+
+**Batching** packs the vertices of many sprites into one big array and one GPU buffer, and draws them all with a single call.
+
+| | Without batching | With batching |
+|---|---|---|
+| Draw calls for N sprites | N | about N / 1000 |
+| Vertex data | one small buffer per sprite | one large buffer holding up to 1000 sprites |
+
+### The pieces
+
+```
+Scene
+ └─ Renderer                      owns the list of batches
+     └─ RenderBatch (1000 sprites each)
+         ├─ sprites[]             the SpriteRenderers in this batch
+         ├─ vertices[]            CPU copy of all vertex data
+         └─ VAO, VBO, EBO         GPU copies and layout
+```
+
+| Class | Role |
+|---|---|
+| `SpriteRenderer` | component holding a color (`Vector4f`, rgba); marks a GameObject as something to draw |
+| `Transform` | position and size of a GameObject |
+| `Renderer` | decides which batch a sprite goes into; renders all batches |
+| `RenderBatch` | stores up to `maxBatchSize` sprites, builds their vertex data, draws them in one call |
+
+### How a sprite gets drawn
+
+**Adding (once per sprite):**
+1. The scene's `addGameObjectToScene(go)` hands the object to `Renderer.add(go)`.
+2. `Renderer` asks the object for a `SpriteRenderer` (`getComponet`). If there is none, nothing is drawn.
+3. It finds the first batch with room and calls `batch.addSprite(sprite)`. If every batch is full, it creates a new `RenderBatch`, calls `start()` on it, and adds the sprite there.
+4. `addSprite` stores the sprite in the next free slot and calls `loadVertexProperties(index)`, which writes the sprite's 4 corners into the batch's `vertices` array.
+
+**Rendering (every frame):**
+1. The scene updates its game objects, then calls `renderer.render()`.
+2. Each batch uploads the whole `vertices` array to the GPU (`glBufferSubData`).
+3. The batch activates its shader and uploads the camera's `uProjection` and `uView`.
+4. It binds its VAO and makes one call: `glDrawElements(GL_TRIANGLES, numSprites * 6, GL_UNSIGNED_INT, 0)`.
+
+> **TODO, check against your code:** the above assumes `Scene` has a `renderer` field, that `addGameObjectToScene` calls `renderer.add(go)`, and that `Window.getScene()` and `Scene.camera()` exist (the batch uses them to get the camera). Confirm and note where each lives.
+
+### Transform
+
+```java
+public class Transform {
+    public Vector2f position;   // bottom-left corner of the object
+    public Vector2f scale;      // width (x) and height (y)
+}
+```
+
+For a sprite, `position` is the **bottom-left corner** of its quad and `scale` is its **size** in world units. The default constructor creates scale (0, 0), which is an invisible sprite. The constructors store the vectors they are given; they don't copy them. `GameObject` has a public `transform` field and takes a `Transform` in its constructor *(confirm against `GameObject.java`)*.
+
+### Vertex format
+
+Each vertex is 6 floats:
+
+```
+x  y    r  g  b  a
+```
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `POS_SIZE` | 2 | floats for position (x, y); there is no z yet |
+| `COLOR_SIZE` | 4 | floats for color (r, g, b, a) |
+| `POS_OFFSET` | 0 | position starts at byte 0 of a vertex |
+| `COLOR_OFFSET` | 8 | color starts after the 2 position floats (2 x 4 bytes) |
+| `VERTEX_SIZE` | 6 | floats per vertex |
+| `VERTEX_SIZE_BYTES` | 24 | the **stride** |
+
+A sprite is a quad of 4 vertices, so it uses 24 floats (96 bytes). The sprite in slot `index` occupies `vertices[index * 24]` through `vertices[index * 24 + 23]`. The array is allocated for the whole batch up front: `maxBatchSize * 4 * VERTEX_SIZE` floats.
+
+This layout must match the vertex shader: attribute 0 is the position, attribute 1 is the color. A shader that declares `vec3 aPos` still works with 2-float positions, because OpenGL fills the missing z with 0. The shader must not rely on attributes this layout doesn't supply (such as texture coordinates), and the fragment shader must output the vertex color, not a texture lookup.
+
+### Corners and indices
+
+`loadVertexProperties` computes each corner as `position + (xAdd, yAdd) * scale`, where `xAdd` and `yAdd` are 0 or 1:
+
+| Vertex | xAdd | yAdd | Corner |
+|---|---|---|---|
+| 0 | 1 | 1 | top right |
+| 1 | 1 | 0 | bottom right |
+| 2 | 0 | 0 | bottom left |
+| 3 | 0 | 1 | top left |
+
+```
+ 3 ─────── 0
+ │       ╱ │
+ │     ╱   │
+ │   ╱     │
+ │ ╱       │
+ 2 ─────── 1
+```
+
+The element array turns each quad into two counter-clockwise triangles, `3, 2, 0` and `0, 2, 1`, plus an offset of `4 * quadIndex`. Quad 0 uses indices 0 to 5. Quad 1 uses vertices 4 to 7 with indices `7, 6, 4, 4, 6, 5`, and so on. The array is generated once for the full `maxBatchSize` in `start()`. Each frame only the first `numSprites * 6` indices are drawn, so unused slots are ignored.
+
+### RenderBatch
+
+| Member | What it does |
+|---|---|
+| `sprites[]`, `numSprites` | the sprites in this batch and how many slots are used |
+| `vertices[]` | CPU copy of the vertex data for all slots |
+| `hasRoom` / `hasRoom()` | false once `numSprites` reaches `maxBatchSize` |
+| `shader` | the shader used to draw this batch |
+| `start()` | creates the VAO, VBO and EBO and sets up the attribute pointers (once) |
+| `addSprite(spr)` | stores the sprite and writes its vertex data |
+| `render()` | uploads vertices, sets uniforms, draws |
+
+**`start()` in detail:**
+1. Create and bind a VAO.
+2. Create the VBO and reserve space with `glBufferData(GL_ARRAY_BUFFER, sizeInBytes, GL_DYNAMIC_DRAW)`. No data is given, so this only reserves GPU memory. `GL_DYNAMIC_DRAW` hints that the data changes often.
+3. Create the EBO and fill it with the generated indices. It uses `GL_STATIC_DRAW` because indices never change.
+4. Set the attribute pointers (stride and offset, as explained in section 10).
+
+`start()` must run before the first `render()`. `Renderer` calls it right after creating the batch.
+
+### Renderer
+
+- `MAX_BATCH_SIZE` is 1000 sprites per batch, and `batches` is the list of all batches.
+- `add(GameObject)` is the public entry point. It silently ignores objects without a `SpriteRenderer`.
+- The private `add(SpriteRenderer)` picks or creates a batch, as described above.
+- `render()` calls `render()` on every batch.
+
+For N sprites there are `ceil(N / 1000)` batches, so `ceil(N / 1000)` draw calls per frame.
+
+### Current limitations
+
+- **Vertex data is built once, when the sprite is added.** The whole array is re-uploaded every frame, but nothing rebuilds it, so changing a transform or color afterwards doesn't change what's drawn. Moving sprites needs `loadVertexProperties` to run again (every frame, or only when something changed).
+- **No textures in the batch yet.** The vertex has no UV coordinates or texture slot, and the `Texture` class from section 11b isn't used by the batch.
+- **Draw order is insertion order.** There is no z value or depth test, so later sprites draw over earlier ones.
+- **Sprites can't be removed from a batch.**
+- **A `SpriteRenderer` must be attached before the object is added to the scene.** The renderer only looks for a sprite at the moment the object is added, so a sprite added later is never drawn.
 
 ---
 
@@ -716,6 +953,12 @@ The stride changes for **all three** attributes, not just the new one. Forgettin
 - **Orthographic projection**: no perspective, so objects keep their size at any distance.
 - **Normalized device coordinates**: the -1 to 1 range the GPU draws in.
 - **View matrix**: positions the world relative to the camera. **Projection matrix**: maps the visible region into normalized device coordinates.
+- **Component-based design**: building objects by attaching small behavior pieces (components) to a generic container instead of using deep class hierarchies.
+- **GameObject (entity)**: a named container that holds components.
+- **Component**: a piece of behavior or data attached to a GameObject, with `start()` and `update(dt)`.
+- **Back-reference**: a field that points from a child to its owner (`component.gameObject`).
+- **Generic method** (`<T extends Component> T`): a method whose parameter or return type is chosen by the caller, so no cast is needed.
+- **`Class<T>`**: an object that represents a type at runtime (for example `SpriteRenderer.class`), used to ask for a component by type.
 
 ---
 
@@ -743,5 +986,5 @@ When the file gets long, split it into a `docs/` folder with one file per sectio
 Add questions here as they come up, and cross them off when answered.
 
 - [ ] Shaders
-- [ ]
-- [ ]
+- [ ] Game Object & Component
+- [ ] Batch rendering
