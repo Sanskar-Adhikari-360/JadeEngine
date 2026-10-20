@@ -15,7 +15,7 @@ import static org.lwjgl.opengl.GL20.*;
 import static org.lwjgl.opengl.GL30.glBindVertexArray;
 import static org.lwjgl.opengl.GL30.glGenVertexArrays;
 
-public class RenderBatch {
+public class RenderBatch implements Comparable<RenderBatch> {
     // Vertex
     // ======
     // pos                  Color                       tex coords      tex id
@@ -48,8 +48,10 @@ public class RenderBatch {
     private int vaoID, vboID;
     private int maxBatchSize;
     private Shader shader;
+    private int zIndex;
 
-    public RenderBatch(int maxBatchSize){
+    public RenderBatch(int maxBatchSize, int zIndex){
+        this.zIndex = zIndex;
         System.out.println("Creating new render batch");
         shader = AssetPool.getShader("assets/shaders/default.glsl");
         this.sprites = new SpriteRenderer[maxBatchSize];
@@ -260,5 +262,17 @@ public class RenderBatch {
     // Checks if we already have a specific texture
     public boolean hasTexture(Texture tex){
         return this.textures.contains(tex);
+    }
+
+    public int getzIndex(){
+        return this.zIndex;
+    }
+
+    @Override
+    public int compareTo(RenderBatch o) {
+        // if this.zIndex is less than o.zIndex it returns negative 1
+        // if this.zIndex is greater than o.zIndex it returns positive 1
+        // if this.zIndex is equal to o.zIndex then returns 0
+        return Integer.compare(this.zIndex,o.zIndex);
     }
 }
