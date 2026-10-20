@@ -9,6 +9,8 @@ import util.AssetPool;
 
 public class LevelEditorScene extends Scene {
 
+    private GameObject obj1;
+    private Spritesheet sprites;
 
     public LevelEditorScene(){
 
@@ -20,9 +22,9 @@ public class LevelEditorScene extends Scene {
 
         this.camera = new Camera(new Vector2f(-250,0));
 
-        Spritesheet sprites = AssetPool.getSpritesheet("assets/images/spritesheet.png");
+        sprites = AssetPool.getSpritesheet("assets/images/spritesheet.png");
 
-        GameObject obj1 = new GameObject("Object 1",new Transform(new Vector2f(100,100), new Vector2f(256,256)));
+        obj1 = new GameObject("Object 1",new Transform(new Vector2f(100,100), new Vector2f(256,256)));
         obj1.addComponent(new SpriteRenderer(sprites.getSprite(0)));
         this.addGameObjectToScene(obj1);
 
@@ -36,8 +38,23 @@ public class LevelEditorScene extends Scene {
                         16,16,32,0));
     }
 
+    private int spriteIndex = 0;
+    private float spriteFlipTime = 0.2f;
+    private float SpriteFlipTimeLeft = 0.0f;
     @Override
     public void update(float dt) {
+        SpriteFlipTimeLeft -= dt;
+        if (SpriteFlipTimeLeft <= 0){
+            SpriteFlipTimeLeft = spriteFlipTime;
+            spriteIndex++;
+        }
+        if (spriteIndex > 4){
+            spriteIndex =0;
+        }
+        obj1.getComponet(SpriteRenderer.class).setSprite(sprites.getSprite(spriteIndex));
+
+        obj1.transform.position.x += 10*dt;
+
         System.out.println("FPS " + (1.0f/dt));
 
         for (GameObject go : this.gameObjects){
