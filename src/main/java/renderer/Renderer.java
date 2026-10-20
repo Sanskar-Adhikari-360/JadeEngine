@@ -25,9 +25,13 @@ public class Renderer {
         boolean added = false;
         for (RenderBatch batch : batches){
             if (batch.hasRoom()){
-                batch.addSprite(sprite);
-                added = true;
-                break;
+                Texture tex = sprite.getTexture();
+                // Check if a sprite has a texture and runs if the batch already has that texture or there is room for more texture it's something like that idk
+                if (tex == null || (batch.hasTextureRoom(tex) || batch.hasTextureRoom(tex))) {
+                    batch.addSprite(sprite);
+                    added = true;
+                    break;
+                }
             }
         }
         if(!added){

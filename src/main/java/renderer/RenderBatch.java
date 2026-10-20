@@ -241,4 +241,14 @@ public class RenderBatch {
     public boolean hasRoom(){
         return this.hasRoom;
     }
+
+    // Tells us if we have room for more texture
+    public boolean hasTextureRoom(Texture tex){
+        return this.textures.size() < 8;
+    }
+
+    // Checks if we already have a specific texture
+    public boolean hasTexture(Texture tex){
+        return this.textures.contains(tex);
+    }
 }
