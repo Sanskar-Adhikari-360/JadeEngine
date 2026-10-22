@@ -1,4 +1,4 @@
-package jade;
+package gesha;
 
 public class Main {
     public static void main(String[] args) {

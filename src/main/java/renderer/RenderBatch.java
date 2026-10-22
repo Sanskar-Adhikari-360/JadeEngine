@@ -1,12 +1,11 @@
 package renderer;
 
 import components.SpriteRenderer;
-import jade.Window;
+import gesha.Window;
 import org.joml.Vector2f;
 import org.joml.Vector4f;
 import util.AssetPool;
 
-import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.List;
 

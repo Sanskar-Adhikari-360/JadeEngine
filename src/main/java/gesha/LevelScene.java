@@ -1,6 +1,4 @@
-package jade;
-
-import org.lwjgl.system.windows.WINDOWPLACEMENT;
+package gesha;
 
 public class LevelScene extends Scene {
     public LevelScene(){

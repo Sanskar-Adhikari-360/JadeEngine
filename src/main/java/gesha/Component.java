@@ -1,4 +1,4 @@
-package jade;
+package gesha;
 
 public abstract class Component {
 

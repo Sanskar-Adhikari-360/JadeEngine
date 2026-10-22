@@ -1,7 +1,7 @@
 package components;
 
-import jade.Component;
-import jade.Transform;
+import gesha.Component;
+import gesha.Transform;
 import org.joml.Vector2f;
 import org.joml.Vector4f;
 import renderer.Texture;

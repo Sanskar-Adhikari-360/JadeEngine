@@ -1,10 +1,9 @@
-package jade;
+package gesha;
 
 import components.Sprite;
 import components.SpriteRenderer;
 import components.Spritesheet;
 import org.joml.Vector2f;
-import org.joml.Vector4f;
 import util.AssetPool;
 
 public class LevelEditorScene extends Scene {

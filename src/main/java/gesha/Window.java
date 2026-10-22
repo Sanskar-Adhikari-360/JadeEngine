@@ -1,4 +1,4 @@
-package jade;
+package gesha;
 
 
 //this class is made to be singleton class so there is only one instance of window running at a time
@@ -7,8 +7,6 @@ import org.lwjgl.*;
 import org.lwjgl.glfw.*;
 import org.lwjgl.opengl.*;
 
-
-import java.sql.Time;
 
 import static org.lwjgl.glfw.Callbacks.glfwFreeCallbacks;
 import static org.lwjgl.glfw.GLFW.*;
@@ -33,7 +31,7 @@ public class Window {
     private Window() {
         this.width = 1920;
         this.height = 1080;
-        this.title = "Jade";
+        this.title = "Gesha Engine";
         r = 1;
         b = 1;
         g = 1;

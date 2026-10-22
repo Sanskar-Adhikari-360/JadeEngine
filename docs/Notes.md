@@ -1,4 +1,4 @@
-# Jade Engine Notes
+# Gesha Engine Notes
 
 *The goal of this is to help the future me understand how the engine works without reading every single file.*
 
@@ -27,7 +27,7 @@
 
 ## 1. Overview
 
-Jade is a 2D game engine written in Java. It uses **LWJGL** to talk to **GLFW** (windows and input) and **OpenGL** (drawing), and **JOML** for matrix and vector math.
+Gesha is a 2D game engine written in Java. It uses **LWJGL** to talk to **GLFW** (windows and input) and **OpenGL** (drawing), and **JOML** for matrix and vector math.
 
 **What the program does right now:**
 
@@ -63,7 +63,7 @@ GameEngine/
 │   └── shaders/
 │       └── default.glsl          vertex + fragment shader in one file
 └── src/main/java/
-    ├── jade/       Main, Window, Scene, LevelEditorScene, LevelScene,
+    ├── gesha/       Main, Window, Scene, LevelEditorScene, LevelScene,
     │               Camera, KeyListener, MouseListener
     ├── renderer/   Shader
     └── util/       Time
@@ -127,7 +127,7 @@ GLFW holds native memory that Java's garbage collector cannot free, so we releas
 
 ### Fields
 
-- `width`, `height`, `title`: window settings (1920x1080, "Jade"). They are only used when creating the window.
+- `width`, `height`, `title`: window settings (1920x1080, "Gesha"). They are only used when creating the window.
 - `glfwWindow`: a `long` handle (a native pointer) that identifies the window to GLFW
 - `r, g, b, a`: the clear color (starts white), public so scenes can change it
 - `window`: the single instance
@@ -337,7 +337,7 @@ The scene talks only to GameObjects. A GameObject forwards calls to its componen
 
 ### Where the files live
 
-`Component` and `GameObject` are in the `jade` package. Concrete components (`SpriteRenderer`, `FontRenderer`, and future ones) are in the `components` package and extend `jade.Component`.
+`Component` and `GameObject` are in the `gesha` package. Concrete components (`SpriteRenderer`, `FontRenderer`, and future ones) are in the `components` package and extend `gesha.Component`.
 
 ### Component
 
@@ -407,7 +407,7 @@ Note that `addComponent` does not call `start()`. If you add a component to an o
 
 ### Adding a new component
 
-1. Create a class in the `components` package that `extends Component` (import `jade.Component`).
+1. Create a class in the `components` package that `extends Component` (import `gesha.Component`).
 2. Implement `update(float dt)`, and override `start()` if it needs its owner or sibling components.
 3. Attach it with `gameObject.addComponent(new MyComponent())`.
 

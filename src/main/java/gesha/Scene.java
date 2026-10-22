@@ -2,7 +2,7 @@
 // Abstract classes are also called incomplete blueprints because they contain the method but no the actual code
 // In this class update() is an abstract method it has no implementations body here
 // Any subclasses extending Scene must provide their own implementations
-package jade;
+package gesha;
 
 import renderer.Renderer;
 
