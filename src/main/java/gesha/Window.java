@@ -155,7 +155,7 @@ public class Window {
                 currentScene.update(dt);
             }
 
-            this.imGuiLayer.update(dt);
+            this.imGuiLayer.update(dt,currentScene);
             glfwSwapBuffers(glfwWindow);
 
             // The time it took to finish the game loop

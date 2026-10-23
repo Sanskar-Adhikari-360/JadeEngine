@@ -1,5 +1,7 @@
 package gesha;
 
+import imgui.ImFontAtlas;
+import imgui.ImFontConfig;
 import imgui.ImGui;
 import imgui.ImGuiIO;
 import imgui.flag.ImGuiConfigFlags;
@@ -31,6 +33,16 @@ public class ImGuiLayer {
         io.addConfigFlags(ImGuiConfigFlags.NavEnableKeyboard); // keyboard navigation
 
         // Fonts would be configured here, before the backends are initialized.
+        final ImFontAtlas fontAtlas = io.getFonts();
+        final ImFontConfig fontConfig = new ImFontConfig(); // should be explicitly destroyed
+
+        fontConfig.setGlyphRanges(fontAtlas.getGlyphRangesDefault());
+
+        fontAtlas.addFontFromFileTTF("assets/fonts/Monocraft.ttf", 16, fontConfig);
+
+
+
+        fontConfig.destroy(); // removing the config after all the fonts were added since we won't be needing this anymore
 
         // true = ImGui installs its GLFW callbacks and forwards every event to the
         // callbacks you registered before this call, so your game input keeps working.
@@ -40,10 +52,12 @@ public class ImGuiLayer {
 
     // dt is no longer needed (ImGuiImplGlfw computes it), but I kept the parameter
     // so Window.java doesn't need to change.
-    public void update(float dt) {
+    public void update(float dt, Scene currentScene) {
         imGuiGl3.newFrame();
         imGuiGlfw.newFrame();
         ImGui.newFrame();
+
+        currentScene.sceneImgui();
 
         ImGui.showDemoWindow();
 
