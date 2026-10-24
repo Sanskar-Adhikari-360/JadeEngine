@@ -11,6 +11,11 @@ repositories {
 
 dependencies {
     // =========================
+    // GSON
+    // =========================
+    implementation 'com.google.code.gson:gson:2.14.0'
+
+    // =========================
     // ImGui
     // =========================
     implementation platform("org.lwjgl:lwjgl-bom:3.4.3")

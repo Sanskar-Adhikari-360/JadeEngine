@@ -143,6 +143,7 @@ public class Window {
         // the real dt is calculated on the end of the frame
         float dt = -1.0f;
 
+        currentScene.load();
         while (!glfwWindowShouldClose(glfwWindow)) {
             // Poll events
             glfwPollEvents();
@@ -165,6 +166,7 @@ public class Window {
             // re-initializes the beginTime value to be equal to endTime for the next frame
             beginTime = endTime;
         }
+        currentScene.saveExit();
     }
 
 }
